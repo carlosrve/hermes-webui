@@ -23,9 +23,16 @@ requires a separate approved action. No new divergence is added to master here.
    canonical cwd/profile projection, optional read-only by-ID sidecar probes,
    source-aware native-workspace preservation, and fail-closed profile probes.
    Keeps existing project IDs. It does not replace #6659's scheduling algorithm.
-3. Documentation-only commit follows. Review-only branch:
+3. Documentation-only commits follow. Review-only branch:
    `review/6659-canonical-projection`. Supersedes the approach of fork draft PR1,
    without rewriting its branch or the shared integration branch.
+4. Additive lineage correction after `f2ad935ee65a0f523e2ed643b8135f3d1a8cead7`
+   (the commit containing this entry): `_project_agent_session_rows` now copies
+   the served tip's `cwd` and `profile_name`, including NULL/absent values, rather
+   than pairing its ID with root routing metadata. Root title/time and upstream
+   lineage project ownership remain unchanged. The 28 cherry-picks above and
+   the original local correction are untouched. Regression gates live in
+   `tests/test_external_project_projection_lineage.py`.
 
 ## Retirement / future updates
 
@@ -33,9 +40,10 @@ requires a separate approved action. No new divergence is added to master here.
   branch from the maintained integration baseline. Determine the merged SHA and
   compare patches (squash merges may have different IDs). Omit this entire 28-commit
   backport group once its behavior is present; do not blindly cherry-pick it again.
-- Reapply only the local correction if still needed. Retire it only when upstream
-  passes the external projection + independent review regressions, including GET
-  and sidebar classification, absent cwd preservation, invalid/isolated profiles,
+- Reapply only the local corrections if still needed. Retire them only when upstream
+  passes the external projection + independent review + lineage regressions, including GET
+  and sidebar classification, NULL/different root cwd versus served tip, tip-profile
+  isolation and NULL-profile DB fallback, absent cwd preservation, invalid/isolated profiles,
   and no message/sidecar mutation. #6659 alone does not meet those tests.
 - #6836 is an existing independent dependency: retire its backport when upstream
   includes bindings. #5771 (catalog) and #7037 (lineage writes) are NOT added here.
