@@ -678,7 +678,7 @@ def _apply_project_auto_assign(proj) -> int:
     return changed
 
 
-def _auto_assign_project_for_workspace(workspace, profile=None) -> str | None:
+def _auto_assign_project_for_workspace(workspace, profile=None, *, projects=None) -> str | None:
     """Return the project_id that should own a NEW session in ``workspace``.
 
     Scans projects with ``auto_assign`` enabled whose bound workspace list
@@ -697,10 +697,11 @@ def _auto_assign_project_for_workspace(workspace, profile=None) -> str | None:
         return None
     if not profile:
         profile = _get_active_profile_name() or "default"
-    try:
-        projects = load_projects()
-    except Exception:
-        return None
+    if projects is None:
+        try:
+            projects = load_projects()
+        except Exception:
+            return None
     ws_str = str(workspace)
     for p in projects:
         if not p.get("auto_assign"):
@@ -2495,6 +2496,28 @@ def _build_session_list_cache_payload(
         diag_stage("all_sessions_after_stale_stream_reconcile")
         webui_sessions = _all_sessions_for_sidebar()
     diag_stage("normalize_cli_rows")
+    # Old imported sidecars can contain a former global/default workspace.
+    # Probe their ids directly: recent external rows are deliberately capped.
+    from api.models import agent_session_workspace_metadata
+    rows_by_profile = defaultdict(list)
+    for row in webui_sessions:
+        if not row.get("active_stream_id"):
+            rows_by_profile[row.get("profile") or "default"].append(row)
+    for profile, rows in rows_by_profile.items():
+        metadata = agent_session_workspace_metadata(
+            [row.get("session_id") for row in rows], profile=profile,
+        )
+        for row in rows:
+            canonical = metadata.get(row.get("session_id"))
+            if canonical:
+                # Legacy native WebUI rows may have no canonical cwd yet.
+                if canonical.get("workspace") or (
+                    canonical.get("source") not in (None, "", "webui")
+                    or (not canonical.get("source") and row.get("source_tag")
+                        and not _session_source_is_webui(row))
+                ):
+                    row["workspace"] = canonical["workspace"]
+                row["profile"] = canonical["profile"]
     show_cli_sessions = bool(show_cli_sessions)
     show_previous_messaging_sessions = bool(show_previous_messaging_sessions)
     show_cron_sessions = bool(show_cron_sessions)
@@ -2667,6 +2690,14 @@ def _build_session_list_cache_payload(
         deduped_cli = []
     diag_stage("sort_sessions")
     merged = webui_sessions + deduped_cli
+    # Bindings apply to the served metadata, not only _index.json. External
+    # rows need not be imported (or their messages rewritten) to be filed.
+    projects = load_projects()
+    for row in merged:
+        if not row.get("project_id"):
+            row["project_id"] = _auto_assign_project_for_workspace(
+                row.get("workspace"), row.get("profile") or "default", projects=projects,
+            )
     merged.sort(
         key=lambda s: s.get("last_message_at") or s.get("updated_at", 0) or 0,
         reverse=True,
