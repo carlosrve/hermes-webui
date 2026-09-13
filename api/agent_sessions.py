@@ -512,6 +512,12 @@ def _project_agent_session_rows(rows: list[dict]) -> list[dict]:
         ):
             if key in tip:
                 merged[key] = tip[key]
+        # Navigation and workspace/profile classification must describe the same
+        # segment. NULL (or absent legacy metadata) is not permission to inherit
+        # the root's cwd/profile: downstream applies the queried DB's profile
+        # fallback, not an unrelated ancestor's identity.
+        for key in ('cwd', 'profile_name'):
+            merged[key] = tip.get(key)
         if lineage_project_id:
             merged['project_id'] = lineage_project_id
         if str(tip.get('source') or '').strip().lower() == 'tui':
