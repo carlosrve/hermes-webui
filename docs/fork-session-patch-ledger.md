@@ -6,7 +6,11 @@ Base: `eea6993654832d9080952ae21c88dea8c5b344ee`, branch
 `integration/pr-6836-current-2026-09-12`, verified unchanged on origin.
 It already contains #6836 (`12453f00` integration; upstream head
 `f1b8c91d0cffd96ec9dfd487a9022998acc4ef87`) plus the fork workflow-removal commit.
-Do not copy these changes onto master: master remains pure upstream.
+Do not copy these changes onto master. This task leaves master untouched.
+Final inventory found pre-existing fork commit `090b235154a405e2f2553af920baa25fa39ed1bc`
+(removes inherited workflows) on origin/master beyond upstream `b1286878`.
+Thus master was already not strictly pure upstream; repairing that shared history
+requires a separate approved action. No new divergence is added to master here.
 
 1. Backport **all 28 commits** of [upstream #6659](https://github.com/nesquena/hermes-webui/pull/6659),
    head `cf82b06e1ed9dc200229d8bb70b223ee6268750c`, from its merge base
