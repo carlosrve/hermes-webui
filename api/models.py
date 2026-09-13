@@ -5800,6 +5800,37 @@ def _agent_state_db_path(*, profile=None) -> Path | None:
     return db_path
 
 
+def agent_session_workspace_metadata(session_ids, *, profile="default") -> dict:
+    """Read canonical workspace metadata by id, independent of sidebar caps.
+
+    Never fall back to another profile's database, create a database, or load
+    transcripts. Missing columns/stores provide no evidence for an override.
+    """
+    wanted = list(dict.fromkeys(sid for sid in session_ids if sid))
+    if not wanted:
+        return {}
+    try:
+        import sqlite3
+        db_path = _get_profile_home(profile or "default") / "state.db"
+        with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            if "cwd" not in cols:
+                return {}
+            profile_expr = "profile_name" if "profile_name" in cols else "NULL"
+            result = {}
+            for offset in range(0, len(wanted), 500):
+                chunk = wanted[offset:offset + 500]
+                marks = ','.join('?' for _ in chunk)
+                for sid, cwd, name in conn.execute(
+                    f"SELECT id, cwd, {profile_expr} FROM sessions WHERE id IN ({marks})", chunk,
+                ):
+                    result[sid] = {"workspace": cwd or None, "profile": name or profile or "default"}
+            return result
+    except Exception:
+        logger.debug("Canonical session workspace metadata unavailable", exc_info=True)
+        return {}
+
+
 def agent_session_rows_existing(
     session_ids: list[str] | set[str] | frozenset[str],
     *,
@@ -7075,11 +7106,9 @@ def get_claude_code_sessions(projects_dir: Path | str | None = None, *, max_file
     never read during test runs.
     """
     sessions = []
-    # ``get_last_workspace()`` is loop-invariant (the same active workspace for
-    # every Claude Code row) but internally stats config.yaml + probes terminal
-    # cwd, so calling it once per row was ~200 redundant stat()s on the cold
-    # sidebar build (#4718). Resolve it a single time.
-    cc_workspace = str(get_last_workspace())
+    # This bridge has no verified Hermes workspace/profile binding. Do not
+    # invent one from the last workspace selected by an unrelated browser.
+    cc_workspace = None
     for path in _iter_claude_code_jsonl_files(projects_dir, max_files=max_files, max_file_bytes=max_file_bytes) or []:
         messages, summary_title, first_ts, last_ts = _parse_claude_code_jsonl_cached(path)
         if not messages:
@@ -7713,16 +7742,6 @@ def _load_cli_sessions_uncached(
             return None
         return _cron_job_names().get(parts[1])
 
-    # get_last_workspace() reads up to two files + an is_dir()/remote probe and
-    # returns the SAME active workspace for every projected row, so calling it
-    # per row was redundant I/O on the cold sidebar build (#4842; mirrors the
-    # #4718 hoist on the Claude Code path). Resolve it once for this scan.
-    _cli_workspace_cache: list = [None]  # list-as-cell; None = not yet resolved
-    def _cli_workspace():
-        if _cli_workspace_cache[0] is None:
-            _cli_workspace_cache[0] = str(get_last_workspace())
-        return _cli_workspace_cache[0]
-
     _webhook_pid_cache: list[str | None] = [None]
     def _webhook_pid():
         if _webhook_pid_cache[0] is None:
@@ -7766,7 +7785,7 @@ def _load_cli_sessions_uncached(
         raw_ts = row['last_activity'] or row['started_at']
         # Prefer the CLI session's own profile from the DB; fall back to
         # the active CLI profile so sidebar filtering works either way.
-        profile = profile_value  # CLI DB has no profile column; use active profile
+        profile = row.get('profile_name') or profile_value
 
         _source = row['source'] or 'cli'
         # Honor the deleted-WebUI tombstone: a WebUI row the user deleted must
@@ -7796,7 +7815,7 @@ def _load_cli_sessions_uncached(
         cli_sessions.append({
             'session_id': sid,
             'title': _display_title,
-            'workspace': _cli_workspace(),
+            'workspace': row.get('cwd') or None,
             'model': row['model'] or None,
             'message_count': row['message_count'] or row['actual_message_count'] or 0,
             'created_at': row['started_at'],
@@ -7868,7 +7887,7 @@ def _load_cli_sessions_uncached(
                 cli_sessions.append({
                     'session_id': sid,
                     'title': _display_title,
-                    'workspace': _cli_workspace(),
+                    'workspace': row.get('cwd') or None,
                     'model': row['model'] or None,
                     'message_count': row['message_count'] or row['actual_message_count'] or 0,
                     'created_at': row['started_at'],
@@ -7876,7 +7895,7 @@ def _load_cli_sessions_uncached(
                     'pinned': False,
                     'archived': _archived,
                     'project_id': _cron_pid(),
-                    'profile': profile_value,
+                    'profile': row.get('profile_name') or profile_value,
                     'source_tag': 'cron',
                     'raw_source': row.get('raw_source'),
                     'user_id': row.get('user_id'),
@@ -7934,7 +7953,7 @@ def _load_cli_sessions_uncached(
                 cli_sessions.append({
                     'session_id': sid,
                     'title': _display_title,
-                    'workspace': str(get_last_workspace()),
+                    'workspace': row.get('cwd') or None,
                     'model': row['model'] or None,
                     'message_count': row['message_count'] or row['actual_message_count'] or 0,
                     'created_at': row['started_at'],
@@ -7942,7 +7961,7 @@ def _load_cli_sessions_uncached(
                     'pinned': False,
                     'archived': _archived,
                     'project_id': _webhook_pid(),
-                    'profile': profile_value,
+                    'profile': row.get('profile_name') or profile_value,
                     'source_tag': 'webhook',
                     'raw_source': row.get('raw_source') or _source_meta.get('raw_source'),
                     'user_id': row.get('user_id'),
@@ -7998,7 +8017,7 @@ def _load_cli_sessions_uncached(
                 cli_sessions.append({
                     'session_id': sid,
                     'title': _title or 'Kanban Session',
-                    'workspace': _cli_workspace(),
+                    'workspace': row.get('cwd') or None,
                     'model': row['model'] or None,
                     'message_count': row['message_count'] or row['actual_message_count'] or 0,
                     'created_at': row['started_at'],
@@ -8006,7 +8025,7 @@ def _load_cli_sessions_uncached(
                     'pinned': False,
                     'archived': _archived,
                     'project_id': _state_row_project_id(sid, _source),
-                    'profile': profile_value,
+                    'profile': row.get('profile_name') or profile_value,
                     'source_tag': 'kanban',
                     'raw_source': row.get('raw_source') or _source_meta.get('raw_source'),
                     'user_id': row.get('user_id'),

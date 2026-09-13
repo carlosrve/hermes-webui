@@ -706,6 +706,8 @@ def read_importable_agent_session_rows(
         select_sql = f"""
             SELECT s.id, s.title, s.model, s.message_count,
                    s.started_at, s.source,
+                   {_optional_col('cwd', session_cols)},
+                   {_optional_col('profile_name', session_cols)},
                    {session_source_expr},
                    {user_id_expr},
                    {chat_id_expr},
