@@ -1323,7 +1323,9 @@ class Session:
                  **kwargs):
         self.session_id = session_id or uuid.uuid4().hex[:12]
         self.title = title
-        self.workspace = str(Path(workspace).expanduser().resolve())
+        self.workspace = str(Path(workspace).expanduser().resolve()) if workspace else None
+        self.workspace_canonical_baseline = kwargs.get('workspace_canonical_baseline')
+        self.workspace_binding_source = kwargs.get('workspace_binding_source')
         # #6672: immutable snapshot of the workspace at session creation time.
         # s.workspace is updated on every turn when the user switches workspaces
         # mid-session via the WebUI header dropdown; interpolating the live
@@ -1471,7 +1473,7 @@ class Session:
         # without parsing the full messages array (which may be 400KB+).
         # Fields are listed in the order they should appear in the JSON file.
         METADATA_FIELDS = [
-            'session_id', 'title', 'workspace', 'created_workspace', 'model', 'model_provider', 'model_explicit_pick_signature', 'created_at', 'updated_at',
+            'session_id', 'title', 'workspace', 'workspace_canonical_baseline', 'workspace_binding_source', 'created_workspace', 'model', 'model_provider', 'model_explicit_pick_signature', 'created_at', 'updated_at',
             'pinned', 'archived', 'project_id', 'profile',
             'input_tokens', 'output_tokens', 'estimated_cost',
             'cache_read_tokens', 'cache_write_tokens',
@@ -5000,7 +5002,73 @@ def _resolve_session(sid, metadata_only=False, *, promote_cache=True, cache_on_m
 
 def get_session(sid, metadata_only=False):
     """Load a session, optionally with metadata only (skipping messages)."""
-    return _resolve_session(sid, metadata_only=metadata_only)
+    session = _resolve_session(sid, metadata_only=metadata_only)
+    return resolve_session_workspace_metadata(session)
+
+
+def canonical_session_workspace_metadata(sid, *, profile=None):
+    """Return profile-verified evidence, including rows whose cwd is unknown."""
+    from api.profiles import _profiles_match
+
+    profile = profile or 'default'
+    meta = agent_session_workspace_metadata([sid], profile=profile).get(sid, {})
+    return meta if meta and _profiles_match(meta.get('profile'), profile) else {}
+
+
+def canonical_session_workspace(sid, *, profile=None):
+    """Return only a same-profile canonical cwd; absence is not a default."""
+    return canonical_session_workspace_metadata(sid, profile=profile).get('workspace')
+
+
+def session_has_external_workspace_origin(session, *, canonical=None):
+    """Use origin metadata, never id/title or a browser-carried directory."""
+    return bool(
+        getattr(session, 'is_cli_session', False)
+        or any(getattr(session, field, None) not in (None, '', 'webui')
+               for field in ('source_tag', 'raw_source', 'session_source'))
+        or (canonical or {}).get('source') not in (None, '', 'webui')
+    )
+
+
+def session_requires_workspace_selection(session, *, canonical=None):
+    """Only unmarked native legacy sessions permit implicit binding/recovery."""
+    return bool(
+        (canonical or {}).get('workspace')
+        or getattr(session, 'workspace_binding_source', None)
+        or getattr(session, 'workspace_canonical_baseline', None)
+        or session_has_external_workspace_origin(session, canonical=canonical)
+    )
+
+
+def resolve_session_workspace_metadata(session, *, canonical=None):
+    """Overlay canonical metadata without migrating sidecars or changing history.
+
+    An accepted live turn owns its workspace until it settles. Without canonical
+    evidence native/manual settings remain untouched; browser defaults are never
+    evidence about an existing session.
+    """
+    if getattr(session, 'active_stream_id', None):
+        return session
+    if canonical is None:
+        canonical = canonical_session_workspace_metadata(
+            session.session_id, profile=getattr(session, 'profile', None),
+        )
+    workspace = canonical.get('workspace')
+    binding = getattr(session, 'workspace_binding_source', None)
+    baseline = getattr(session, 'workspace_canonical_baseline', None)
+    external = session_has_external_workspace_origin(session, canonical=canonical)
+    if workspace:
+        if baseline == workspace and binding in (None, 'explicit'):
+            session.workspace_binding_source = 'explicit'
+            return session  # A selector choice made against this cwd.
+        # Known canonical cwd wins over unmarked historical settings. Native
+        # choices are preserved when evidence is absent or selection is recorded.
+        session.workspace = workspace
+        session.workspace_canonical_baseline = None
+        session.workspace_binding_source = 'canonical'
+    elif binding != 'explicit' and (external or binding == 'canonical'):
+        session.workspace = None
+    return session
 
 
 _COMPRESSION_RECOVERY_PROFILE_UNSET = object()
@@ -5677,9 +5745,9 @@ class _ExternalSessionView:
     """Minimal session-shaped view for external (Telegram/CLI) sessions.
 
     Only exposes the fields file-manager handlers need (``session_id`` and
-    ``workspace``). The workspace falls back to the WebUI's last-used
-    workspace because state.db does not persist a per-session workspace path
-    and the file browser is intentionally workspace-scoped, not
+    ``workspace``). The workspace must come from the session's canonical cwd,
+    never another browser session's last-used workspace. The file browser is
+    workspace-scoped, not
     session-storage-scoped (issue #3280).
     """
 
@@ -5792,14 +5860,21 @@ def get_session_for_file_ops(sid: str):
     sessions) and only returns that session when its stored profile belongs to
     the active request profile.  If that lookup fails, checks state.db; when the
     session exists there, returns an ``_ExternalSessionView`` whose ``workspace``
-    is the active WebUI workspace. If neither has the session, re-raises
+    is its profile-scoped canonical cwd. Missing workspace evidence re-raises
     ``KeyError`` so callers continue to return their existing 404.
     """
     try:
         session = get_session(sid, metadata_only=True)
     except KeyError:
         if state_db_has_session(sid):
-            return _ExternalSessionView(str(sid), str(get_last_workspace()))
+            from api.profiles import get_active_profile_name, _profiles_match
+            profile = get_active_profile_name()
+            meta = agent_session_workspace_metadata([sid], profile=profile).get(sid, {})
+            if meta and not _profiles_match(meta.get("profile"), profile):
+                raise KeyError(sid) from None
+            if not meta.get("workspace"):
+                raise KeyError(sid) from None  # No session-scoped file root.
+            return _ExternalSessionView(str(sid), meta["workspace"])
         raise
 
     from api.profiles import _profiles_match, get_active_profile_name
@@ -5815,6 +5890,13 @@ def get_session_for_file_ops(sid: str):
             active_profile,
         )
         raise KeyError(sid)
+    meta = canonical_session_workspace_metadata(sid, profile=session_profile)
+    if not getattr(session, "workspace", None):
+        raise KeyError(sid)
+    if session_requires_workspace_selection(session, canonical=meta):
+        # Consumers still validate trust/existence; canonical roots must not
+        # silently recover to a different session's last workspace.
+        return session
     try:
         from api.workspace import resolve_implicit_workspace_with_recovery
 
@@ -6944,7 +7026,7 @@ def import_cli_session(
     s = Session(
         session_id=session_id,
         title=title,
-        workspace=get_last_workspace(),
+        workspace=None,
         model=model,
         messages=messages,
         profile=profile,
@@ -6966,6 +7048,7 @@ def import_cli_session(
             s.session_id,
             exc_info=True,
         )
+    resolve_session_workspace_metadata(s)
     s.save(touch_updated_at=False)
     return s
 

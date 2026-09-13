@@ -5678,11 +5678,11 @@ function getWorkspaceFriendlyName(path){
 }
 
 function syncWorkspaceDisplays(){
-  const hasSession=!!(S.session&&S.session.workspace);
+  const hasSession=!!S.session;
   // Fall back to the profile default workspace when no session is active yet.
   // S._profileDefaultWorkspace is set during boot and profile switches from /api/settings.
   const defaultWs=(typeof S._profileDefaultWorkspace==='string'&&S._profileDefaultWorkspace)||'';
-  const ws=hasSession?S.session.workspace:(defaultWs||'');
+  const ws=hasSession?(S.session.workspace||''):(defaultWs||'');
   const hasWorkspace=!!(ws);
   const label=hasWorkspace?getWorkspaceFriendlyName(ws):t('no_workspace');
 
@@ -5703,7 +5703,7 @@ function syncWorkspaceDisplays(){
   if(mobileLabel) mobileLabel.textContent=S._bootReady?label:'';
   const composerExpanded=!!(composerDropdown&&composerDropdown.classList.contains('open'));
   if(composerChip){
-    composerChip.disabled=!hasWorkspace;
+    composerChip.disabled=!hasWorkspace&&!hasSession;
     composerChip.title=hasWorkspace?ws:t('no_workspace');
     composerChip.setAttribute('aria-label',hasWorkspace?t('workspace_switcher_aria',label):t('no_workspace'));
     composerChip.setAttribute('aria-expanded',composerExpanded?'true':'false');
@@ -6459,7 +6459,7 @@ async function switchToWorkspace(path,name){
     // overwrite the user's newer selection and reject this switch's fresh tree.
     if(typeof bumpWorkspaceTreeGen==='function')bumpWorkspaceTreeGen();
     await api('/api/session/update',{method:'POST',body:JSON.stringify({
-      session_id:S.session.session_id, workspace:path, model:S.session.model, model_provider:S.session.model_provider||null
+      session_id:S.session.session_id, workspace:path, workspace_explicit:true, model:S.session.model, model_provider:S.session.model_provider||null
     })});
     S.session.workspace=path;
     // Explicit workspace switch = user overriding any pending profile-switch default.
