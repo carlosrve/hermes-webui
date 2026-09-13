@@ -678,7 +678,7 @@ def _apply_project_auto_assign(proj) -> int:
     return changed
 
 
-def _auto_assign_project_for_workspace(workspace, profile=None) -> str | None:
+def _auto_assign_project_for_workspace(workspace, profile=None, *, projects=None) -> str | None:
     """Return the project_id that should own a NEW session in ``workspace``.
 
     Scans projects with ``auto_assign`` enabled whose bound workspace list
@@ -697,10 +697,11 @@ def _auto_assign_project_for_workspace(workspace, profile=None) -> str | None:
         return None
     if not profile:
         profile = _get_active_profile_name() or "default"
-    try:
-        projects = load_projects()
-    except Exception:
-        return None
+    if projects is None:
+        try:
+            projects = load_projects()
+        except Exception:
+            return None
     ws_str = str(workspace)
     for p in projects:
         if not p.get("auto_assign"):
@@ -2495,6 +2496,28 @@ def _build_session_list_cache_payload(
         diag_stage("all_sessions_after_stale_stream_reconcile")
         webui_sessions = _all_sessions_for_sidebar()
     diag_stage("normalize_cli_rows")
+    # Old imported sidecars can contain a former global/default workspace.
+    # Probe their ids directly: recent external rows are deliberately capped.
+    from api.models import agent_session_workspace_metadata
+    rows_by_profile = defaultdict(list)
+    for row in webui_sessions:
+        if not row.get("active_stream_id"):
+            rows_by_profile[row.get("profile") or "default"].append(row)
+    for profile, rows in rows_by_profile.items():
+        metadata = agent_session_workspace_metadata(
+            [row.get("session_id") for row in rows], profile=profile,
+        )
+        for row in rows:
+            canonical = metadata.get(row.get("session_id"))
+            if canonical:
+                # Legacy native WebUI rows may have no canonical cwd yet.
+                if canonical.get("workspace") or (
+                    canonical.get("source") not in (None, "", "webui")
+                    or (not canonical.get("source") and row.get("source_tag")
+                        and not _session_source_is_webui(row))
+                ):
+                    row["workspace"] = canonical["workspace"]
+                row["profile"] = canonical["profile"]
     show_cli_sessions = bool(show_cli_sessions)
     show_previous_messaging_sessions = bool(show_previous_messaging_sessions)
     show_cron_sessions = bool(show_cron_sessions)
@@ -2667,6 +2690,14 @@ def _build_session_list_cache_payload(
         deduped_cli = []
     diag_stage("sort_sessions")
     merged = webui_sessions + deduped_cli
+    # Bindings apply to the served metadata, not only _index.json. External
+    # rows need not be imported (or their messages rewritten) to be filed.
+    projects = load_projects()
+    for row in merged:
+        if not row.get("project_id"):
+            row["project_id"] = _auto_assign_project_for_workspace(
+                row.get("workspace"), row.get("profile") or "default", projects=projects,
+            )
     merged.sort(
         key=lambda s: s.get("last_message_at") or s.get("updated_at", 0) or 0,
         reverse=True,
@@ -10339,19 +10370,131 @@ def _dedupe_cli_sidebar_sessions_for_api(
 
 
 CLI_VISIBLE_SESSION_CAP = 20
+# Bound on project-assigned CLI rows in the FINAL MERGED payload, across EVERY
+# project. This is the only place that sees every source of assigned rows at
+# once — state.db's own bounded passes plus imported WebUI sidecars from
+# all_sessions(), which no model-side cap applies to — so it is the only place
+# that can actually bound the assigned set (#6659 review finding 1).
+#
+# It has to bound the MERGED set, not one project: 200 rows x N projects grows
+# with the project count, and 1,000 assigned conversations spread over 5 projects
+# still returned all 1,000 — the exact reproduction from that finding. Spelled as
+# a literal because api.models is imported further down this module; pinned equal
+# to models.PROJECT_ASSIGNED_CLI_LIMIT by
+# test_route_merged_assigned_cap_is_the_existing_model_row_cap.
+CLI_PROJECT_ASSIGNED_CAP = 200
 
 
-def _cap_recent_cli_sessions(sessions: list[dict], cli_cap: int = CLI_VISIBLE_SESSION_CAP) -> list[dict]:
-    """Keep only the most recent CLI-visible sessions after filtering."""
+def _draw_assigned_cli_rows_fairly(
+    rows_by_project: dict[str, list[int]], budget: int
+) -> set[int]:
+    """Pick ``budget`` assigned row indices, spread fairly across the projects.
+
+    ``rows_by_project`` maps project id -> that project's row indices, newest
+    first, keyed in order of each project's most recent assigned conversation
+    (``sessions`` is newest-first, so insertion order already is that order).
+
+    Each round hands one slot to every project that still has history left, so:
+
+    * the drawn set never exceeds ``budget`` — that is the whole point, a
+      per-project bound does not bound the payload (#6659 review finding 1);
+    * no single busy project can eat every slot, which a flat ``sessions[:200]``
+      truncation would do to whichever project sorts first — the starvation
+      greptile rejected as P1 on #6659;
+    * every project keeps at least one row whenever
+      ``budget >= len(rows_by_project)``. Past that the bound wins: with more
+      assigned projects than slots, the ``budget`` most recently active projects
+      get one row each, because the review's number is the hard constraint.
+
+    Within a project the draw is newest-first, so what a chip loses is always the
+    oldest end of its own history.
+    """
+    drawn: set[int] = set()
+    if budget <= 0 or not rows_by_project:
+        return drawn
+    queues = list(rows_by_project.values())
+    offsets = [0] * len(queues)
+    remaining = budget
+    while remaining > 0:
+        progressed = False
+        for position, project_rows in enumerate(queues):
+            offset = offsets[position]
+            if offset >= len(project_rows):
+                continue
+            drawn.add(project_rows[offset])
+            offsets[position] = offset + 1
+            remaining -= 1
+            progressed = True
+            if remaining <= 0:
+                break
+        if not progressed:
+            # Every project is exhausted — the whole assigned set fits.
+            break
+    return drawn
+
+
+def _cap_recent_cli_sessions(
+    sessions: list[dict],
+    cli_cap: int = CLI_VISIBLE_SESSION_CAP,
+    project_cap: int = CLI_PROJECT_ASSIGNED_CAP,
+) -> list[dict]:
+    """Cap the default CLI list while retaining project-addressable rows.
+
+    ``sessions`` is newest-first and already deduplicated (WebUI sidecars merged,
+    lineages collapsed, messaging sources folded), so every row counted here is
+    one logical conversation.
+
+    Two independent budgets, because they answer to different users (#6659):
+
+    * ``cli_cap`` unassigned conversations own the default sidebar window. An
+      assigned row must not spend one of those slots, or assigning three sessions
+      to a project silently shortens everyone's sidebar to 17 rows.
+    * ``project_cap`` assigned conversations IN TOTAL, across every project, stay
+      in the payload so the project chips can reveal them, marked
+      ``default_hidden`` once the recent window is full. Past that bound they are
+      dropped: keeping assigned rows past the *recent* cap is the fix, keeping
+      them past *all* bounds just trades a vanishing session for a stalled
+      sidebar.
+
+    That assigned budget is spent by a fair round-robin draw across the projects
+    (see ``_draw_assigned_cli_rows_fairly``) instead of by truncating the merged
+    list, so bounding the payload cannot starve a quiet project (greptile P1 on
+    #6659). ``project_cap <= 0`` disables the assigned bound entirely.
+    """
     if cli_cap <= 0:
         return sessions
+    # Group the assigned rows per project first: the draw has to weigh the
+    # projects against each other, which a single forward pass cannot do.
+    rows_by_project: dict[str, list[int]] = {}
+    for index, session in enumerate(sessions):
+        if not _is_cli_session_for_settings(session):
+            continue
+        project_id = str(session.get("project_id") or "").strip()
+        if project_id:
+            rows_by_project.setdefault(project_id, []).append(index)
+    drawn = (
+        None if project_cap <= 0
+        else _draw_assigned_cli_rows_fairly(rows_by_project, project_cap)
+    )
     kept = []
-    cli_seen = 0
-    for session in sessions:
+    recent_seen = 0
+    unassigned_seen = 0
+    for index, session in enumerate(sessions):
         if _is_cli_session_for_settings(session):
-            cli_seen += 1
-            if cli_seen > cli_cap:
-                continue
+            project_id = str(session.get("project_id") or "").strip()
+            if not project_id:
+                unassigned_seen += 1
+                if unassigned_seen > cli_cap:
+                    continue
+                recent_seen += 1
+            else:
+                if drawn is not None and index not in drawn:
+                    continue
+                if recent_seen >= cli_cap:
+                    session = dict(session)
+                    session["default_hidden"] = True
+                else:
+                    recent_seen += 1
         kept.append(session)
     return kept
 
