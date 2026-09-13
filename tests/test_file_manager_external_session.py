@@ -123,7 +123,7 @@ def models_module():
 def test_get_session_for_file_ops_webui_passthrough(models_module, monkeypatch):
     """(a) WebUI session — delegates to get_session, no state.db consulted."""
     profiles_module = pytest.importorskip("api.profiles")
-    sentinel = SimpleNamespace(profile=None)
+    sentinel = SimpleNamespace(profile=None, workspace=str(models_module.DEFAULT_WORKSPACE))
     called = {"get_session": 0, "profile_match": 0, "state_db": 0}
 
     def fake_get_session(sid, metadata_only=False):
@@ -822,6 +822,10 @@ def test_get_session_for_file_ops_state_db_fallback(
         models_module, "get_last_workspace", lambda: str(workspace)
     )
 
+    monkeypatch.setattr(models_module, "_get_profile_home", lambda profile: tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE sessions ADD COLUMN cwd TEXT")
+        conn.execute("UPDATE sessions SET cwd=?", (str(workspace),))
     view = models_module.get_session_for_file_ops("tg-123")
     assert view.session_id == "tg-123"
     assert Path(view.workspace) == workspace

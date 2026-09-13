@@ -8692,24 +8692,9 @@ def _claim_or_synthesize_cli_session(sid: str, cli_meta: dict = None):
     loaded read-only AND continued writeable from the WebUI.
     """
     def build_workspace(sid, cli_meta):
-        """Coalesce workspace with sane fallbacks so _start_run doesn't
-        trip on a missing field. state.db's cwd is the canonical workspace for
-        agent sessions; CLI metadata is the fallback (handles Telegram/etc).
-        """
-        workspace = (cli_meta or {}).get("workspace") or (cli_meta or {}).get("cwd")
-        if not workspace:
-            try:
-                from api.workspace import get_last_workspace
-                workspace = get_last_workspace()
-            except Exception:
-                workspace = None
-        if not workspace:
-            try:
-                from api.models import DEFAULT_WORKSPACE
-                workspace = DEFAULT_WORKSPACE
-            except Exception:
-                workspace = "/"
-        return workspace
+        from api.models import canonical_session_workspace
+        from api.profiles import get_active_profile_name
+        return canonical_session_workspace(sid, profile=get_active_profile_name())
 
     def build_session(sid, cli_meta, msgs, read_only_flag, is_cli_flag=True):
         return Session(
@@ -16512,15 +16497,44 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, "Session not found", 404)
         except PermissionError:
             return bad(handler, "Read-only imported sessions cannot be updated from WebUI", 403)
-        old_ws = getattr(s, "workspace", "")
+        from api.models import (
+            canonical_session_workspace_metadata, resolve_session_workspace_metadata,
+            session_has_external_workspace_origin,
+        )
+        old_ws = getattr(s, "workspace", None)
         old_model = getattr(s, "model", None)
         old_provider = getattr(s, "model_provider", None)
-        try:
-            new_ws = str(resolve_trusted_workspace(body.get("workspace", s.workspace), profile=getattr(s, "profile", None)))
-        except ValueError as e:
-            return bad(handler, str(e))
         with _get_session_agent_lock(body["session_id"]):
+            canonical = canonical_session_workspace_metadata(
+                s.session_id, profile=getattr(s, 'profile', None),
+            )
+            resolve_session_workspace_metadata(s, canonical=canonical)
+            candidate = body.get('workspace')
+            selected = candidate not in (None, '') and (
+                body.get('workspace_explicit') is True
+                or (
+                    not canonical.get('workspace')
+                    and not session_has_external_workspace_origin(s, canonical=canonical)
+                    and getattr(s, 'workspace_binding_source', None) != 'canonical'
+                    and not getattr(s, 'workspace_canonical_baseline', None)
+                )
+            )
+            try:
+                # Null/omitted workspace is a model-only update, not boot-default intent.
+                new_ws = s.workspace
+                if selected:
+                    try:
+                        new_ws = str(resolve_trusted_workspace(candidate, profile=getattr(s, "profile", None)))
+                    except TypeError:
+                        new_ws = str(resolve_trusted_workspace(candidate))
+                elif candidate not in (None, ''):
+                    new_ws = _resolve_chat_workspace_for_regeneration(s, candidate)
+            except ValueError as e:
+                return bad(handler, str(e))
             s.workspace = new_ws
+            if selected:
+                s.workspace_binding_source = 'explicit'
+                s.workspace_canonical_baseline = canonical.get('workspace')
             if "model" in body or "model_provider" in body:
                 model, provider = _session_model_state_from_request(
                     body.get("model", s.model),
@@ -16550,7 +16564,8 @@ def handle_post(handler, parsed) -> bool:
                 close_terminal(body["session_id"])
             except Exception:
                 logger.debug("Failed to close workspace terminal after workspace update")
-        set_last_workspace(new_ws, profile=getattr(s, "profile", None))
+        if selected:
+            set_last_workspace(new_ws, profile=getattr(s, "profile", None))
         return j(
             handler,
             {"session": public_session_projection(s.compact() | {"messages": s.messages})},
@@ -18839,6 +18854,20 @@ def _handle_list_dir(handler, parsed):
     try:
         _list_profile = getattr(webui_session, "profile", None)
         if webui_session is None:
+            from api.profiles import get_active_profile_name
+            _list_profile = get_active_profile_name()
+        if not workspace:
+            raise ValueError("Session workspace is unknown; select a workspace explicitly")
+        from api.models import canonical_session_workspace_metadata, session_requires_workspace_selection
+        from api.profiles import get_active_profile_name, _profiles_match
+        if not _profiles_match(_list_profile, get_active_profile_name()):
+            raise ValueError("Session belongs to another profile")
+        canonical = canonical_session_workspace_metadata(sid, profile=_list_profile)
+        if webui_session is None:
+            workspace = canonical.get('workspace')
+            if not workspace:
+                raise ValueError("Session workspace is unknown; select a workspace explicitly")
+        if webui_session is None or session_requires_workspace_selection(webui_session, canonical=canonical):
             try:
                 workspace = resolve_trusted_workspace(workspace, profile=_list_profile)
             except TypeError:
@@ -25235,15 +25264,42 @@ def _handle_chat_start(handler, body, diag=None):
 
 
 
-def _resolve_chat_workspace_with_recovery(s, requested_workspace) -> str:
-    """Recover stale implicit session workspaces without hiding explicit errors."""
+def _resolve_chat_workspace(s, requested_workspace, *, persist_recovery):
+    """Reconcile browser-carried cwd; selector intent lives in session/update.
+
+    Canonical evidence forbids recovery to a browser/global default. A request
+    body alone is not an explicit selector change against that evidence.
+    """
+    from api.models import (
+        canonical_session_workspace_metadata, resolve_session_workspace_metadata,
+        session_requires_workspace_selection,
+    )
+
+    canonical = canonical_session_workspace_metadata(
+        s.session_id, profile=getattr(s, 'profile', None),
+    )
+    resolve_session_workspace_metadata(s, canonical=canonical)
     _session_profile = getattr(s, "profile", None)
-    explicit = requested_workspace not in (None, "")
-    if explicit:
+    def _trusted(candidate):
         try:
-            return str(resolve_trusted_workspace(requested_workspace, profile=_session_profile))
+            return resolve_trusted_workspace(candidate, profile=_session_profile)
         except TypeError:
-            return str(resolve_trusted_workspace(requested_workspace))
+            return resolve_trusted_workspace(candidate)
+    def _normalized(candidate):
+        try:
+            return _resolve_path(candidate, profile=_session_profile)
+        except TypeError:
+            return _resolve_path(candidate)
+    explicit = requested_workspace not in (None, "")
+    if session_requires_workspace_selection(s, canonical=canonical):
+        effective = getattr(s, 'workspace', None)
+        if not effective:
+            raise ValueError("Session workspace is unknown; select a workspace explicitly")
+        if explicit and str(_normalized(requested_workspace)) != str(_normalized(effective)):
+            raise ValueError("Session workspace changed; reload the session or select a workspace explicitly")
+        return str(_trusted(effective))
+    if explicit:
+        return str(_trusted(requested_workspace))
     stored_workspace = getattr(s, "workspace", None)
     try:
         workspace, recovered = resolve_implicit_workspace_with_recovery(
@@ -25256,36 +25312,20 @@ def _resolve_chat_workspace_with_recovery(s, requested_workspace) -> str:
             stored_workspace,
             get_last_workspace,
         )
-    if not recovered:
+    if not recovered or not persist_recovery:
         return str(workspace)
-    persisted = persist_recovered_workspace_binding(
-        s,
-        workspace,
-        expected_workspace=stored_workspace,
-    )
+    persisted = persist_recovered_workspace_binding(s, workspace, expected_workspace=stored_workspace)
     return str(persisted.workspace)
+
+
+def _resolve_chat_workspace_with_recovery(s, requested_workspace) -> str:
+    """Recover stale implicit session workspaces without hiding explicit errors."""
+    return _resolve_chat_workspace(s, requested_workspace, persist_recovery=True)
 
 
 def _resolve_chat_workspace_for_regeneration(s, requested_workspace) -> str:
     """Resolve regeneration's workspace without persisting before start acceptance."""
-    _session_profile = getattr(s, "profile", None) or None
-    if requested_workspace not in (None, ""):
-        try:
-            return str(resolve_trusted_workspace(requested_workspace, profile=_session_profile))
-        except TypeError:
-            return str(resolve_trusted_workspace(requested_workspace))
-    try:
-        workspace, _recovered = resolve_implicit_workspace_with_recovery(
-            getattr(s, "workspace", None),
-            get_last_workspace,
-            profile=_session_profile,
-        )
-    except TypeError:
-        workspace, _recovered = resolve_implicit_workspace_with_recovery(
-            getattr(s, "workspace", None),
-            get_last_workspace,
-        )
-    return str(workspace)
+    return _resolve_chat_workspace(s, requested_workspace, persist_recovery=False)
 
 
 def _normalize_chat_attachments(raw_attachments):
@@ -25330,10 +25370,7 @@ def _handle_chat_sync(handler, body):
     if not msg:
         return j(handler, {"error": "empty message"}, status=400)
     try:
-        try:
-            workspace = str(resolve_trusted_workspace(body.get("workspace") or s.workspace, profile=getattr(s, "profile", None)))
-        except TypeError:
-            workspace = str(resolve_trusted_workspace(body.get("workspace") or s.workspace))
+        workspace = _resolve_chat_workspace_with_recovery(s, body.get("workspace"))
     except ValueError as e:
         return bad(handler, str(e))
     with _get_session_agent_lock(s.session_id):

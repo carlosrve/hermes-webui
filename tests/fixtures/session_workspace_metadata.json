@@ -1,0 +1,107 @@
+[
+  {
+    "id": "20260904_151950_b525f7cf",
+    "cwd": "/workspace/coopebrisas",
+    "profile_name": "default",
+    "source": "discord",
+    "sidecar": {
+      "workspace": "/workspace/lfc",
+      "profile": "default",
+      "project_id": "39082462549c",
+      "is_cli_session": true,
+      "source_tag": "discord",
+      "session_source": "messaging",
+      "created_workspace": "/workspace/lfc"
+    }
+  },
+  {
+    "id": "20260828_185923_e3afa5",
+    "cwd": "/workspace/gnc",
+    "profile_name": "default",
+    "source": "desktop",
+    "sidecar": {
+      "workspace": "/workspace/lfc",
+      "profile": "default",
+      "project_id": "0d89344722d3",
+      "is_cli_session": false,
+      "source_tag": "desktop",
+      "session_source": "other",
+      "created_workspace": "/workspace/lfc"
+    }
+  },
+  {
+    "id": "20260803_194608_2e3f2c94",
+    "cwd": "/workspace/support",
+    "profile_name": "default",
+    "source": "discord",
+    "sidecar": {
+      "workspace": "/workspace/lfc",
+      "profile": "default",
+      "project_id": "b4ab31afd414",
+      "is_cli_session": true,
+      "source_tag": "discord",
+      "session_source": "messaging",
+      "created_workspace": "/workspace/lfc"
+    }
+  },
+  {
+    "id": "20260829_225835_288994",
+    "cwd": "/workspace/hermes-repo",
+    "profile_name": null,
+    "source": "cli",
+    "sidecar": {
+      "workspace": "/workspace/lfc",
+      "profile": "default",
+      "project_id": "af5df336dfae",
+      "is_cli_session": true,
+      "source_tag": "cli",
+      "session_source": "cli",
+      "created_workspace": "/workspace/lfc"
+    }
+  },
+  {
+    "id": "20260829_193930_9b5acc",
+    "cwd": "/workspace/hermes-repo",
+    "profile_name": null,
+    "source": "desktop",
+    "sidecar": {
+      "workspace": "/workspace/lfc",
+      "profile": "default",
+      "project_id": "af5df336dfae",
+      "is_cli_session": false,
+      "source_tag": "desktop",
+      "session_source": "other",
+      "created_workspace": "/workspace/lfc"
+    }
+  },
+  {
+    "id": "20260829_145509_bb2986",
+    "cwd": "/workspace/vx.ai",
+    "profile_name": null,
+    "source": "desktop",
+    "sidecar": {
+      "workspace": "/workspace/lfc",
+      "profile": "default",
+      "project_id": "018554d8fe77",
+      "is_cli_session": false,
+      "source_tag": "desktop",
+      "session_source": "other",
+      "created_workspace": "/workspace/lfc"
+    }
+  },
+  {
+    "id": "20260729_160636_03274f23",
+    "cwd": "/workspace/uned-plan",
+    "profile_name": "default",
+    "source": "discord",
+    "sidecar": {
+      "workspace": "/workspace",
+      "profile": "default",
+      "project_id": null,
+      "is_cli_session": true,
+      "source_tag": "discord",
+      "session_source": "messaging",
+      "created_workspace": "/workspace"
+    }
+  }
+]

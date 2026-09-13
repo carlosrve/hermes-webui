@@ -1010,13 +1010,12 @@ def test_get_last_workspace_named_profile_never_reads_global_file(monkeypatch, t
     )
 
 
-def test_new_session_binds_explicit_profile_not_ambient_last_workspace(monkeypatch, tmp_path):
-    """new_session()/import_cli_session() must scope their fallback getter.
+def test_new_session_binds_explicit_profile_without_polluting_cli_import(monkeypatch, tmp_path):
+    """New native sessions use the profile default; CLI imports need canonical cwd.
 
-    Maintainer re-gate round 3 (CORE): both Session constructions fell back to
-    get_last_workspace() WITHOUT the profile even though profile=profile was
-    set on the same Session — an Alice session created under ambient Bob bound
-    to BOB's workspace. Uses the real getters and real state files.
+    Native creation still scopes its fallback to Alice. An external import with
+    no canonical state.db cwd must remain unbound rather than borrowing either
+    Alice's or Bob's browser-global last workspace.
     """
     import api.models as models
     from api import profiles
@@ -1063,10 +1062,7 @@ def test_new_session_binds_explicit_profile_not_ambient_last_workspace(monkeypat
         messages=[],
         profile="alice",
     )
-    assert str(imported.workspace) == str(alice_ws), (
-        "import_cli_session under profile='alice' must bind ALICE's last "
-        f"workspace, got {imported.workspace!r}"
-    )
+    assert imported.workspace is None
 
 
 # ── Re-gate round 4 (#7168): malformed names, aliases, unwired boundaries ────
@@ -1210,12 +1206,11 @@ class TestRound4ProfileIsolation:
         )
         assert not (tmp_path / "global").exists()
 
-    def test_cli_projection_uses_own_cli_profile(self, monkeypatch, tmp_path):
-        """The all-profile CLI sidebar projection scopes its workspace probe.
+    def test_cli_projection_uses_canonical_row_cwd_without_global_probe(self, monkeypatch, tmp_path):
+        """The all-profile CLI sidebar projection uses the row's canonical cwd.
 
-        Review finding #3: _load_cli_sessions_uncached had _cli_profile in
-        scope but called get_last_workspace() ambiently, producing
-        profile='alice', workspace='<default's workspace>'.
+        A profile-scoped row must retain its own remote POSIX path and must not
+        consult any browser-global last-workspace fallback.
         """
         import api.models as models
 
@@ -1239,6 +1234,8 @@ class TestRound4ProfileIsolation:
                 "actual_user_message_count": 1,
                 "last_activity": 10.0,
                 "started_at": 9.0,
+                "cwd": "/srv/alice/workspace",
+                "profile_name": "alice",
             }
         ])
         monkeypatch.setattr(models, "_profile_has_user_projects", lambda: False)
@@ -1251,15 +1248,10 @@ class TestRound4ProfileIsolation:
             tmp_path, db, _cli_profile="alice"
         )
         assert any(r.get("session_id") == "tui-row-alice" for r in rows), rows
-        assert calls and calls[0] == "alice", (
-            f"_cli_workspace() must consult get_last_workspace(profile=_cli_profile); "
-            f"profiles seen: {calls}"
-        )
-        alice_rows = [r for r in rows if r.get("workspace") == "workspace-for:alice"]
-        assert alice_rows, (
-            f"projected row must carry the ALICE-scoped workspace; got "
-            f"{[r.get('workspace') for r in rows]}"
-        )
+        projected = next(r for r in rows if r.get("session_id") == "tui-row-alice")
+        assert projected["workspace"] == "/srv/alice/workspace"
+        assert projected["profile"] == "alice"
+        assert calls == []
 
 
 # ── Re-gate round 5 (#7168): traversal gate + symlinked config authority ─────
