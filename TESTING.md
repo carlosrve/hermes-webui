@@ -36,6 +36,25 @@ npm run lint:runtime
 npx eslint --no-config-lookup -c eslint.runtime-guard.config.mjs "static/**/*.js"
 ```
 
+## Session workspace consistency proof
+
+After changing session-open/import or workspace selection, run:
+
+```bash
+./scripts/test.sh tests/test_canonical_session_workspace.py
+# With Playwright/Chromium installed in the local test venv:
+.venv/bin/python tests/browser_session_workspace.py
+```
+
+The browser proof uses isolated temporary state and blocks chat endpoints. It
+replays metadata-only incident fixtures through real `loadSession`, desktop and
+narrow workspace displays, file-manager listings, explicit selection and hard
+reload. Set `WORKSPACE_PROOF_ARTIFACTS` to retain screenshots and JSON results.
+The pytest execution-cwd seam additionally needs an installed Hermes Agent on
+`PYTHONPATH`; a skip is not execution verification. See
+[session workspace authority](docs/session-workspace-authority.md) for scope and
+upstream provenance.
+
 ## Python lint gate (ruff) — forward-looking, new-code-only
 
 The Python twin of the ESLint runtime guard. A curated `ruff` ruleset
