@@ -417,24 +417,41 @@ class TestReasoningConfigHelpers:
 # ── api/streaming.py — AIAgent receives reasoning_config ──────────────────────
 
 class TestStreamingReasoningWiring:
-    """Confirm api/streaming.py reads agent.reasoning_effort from config and
-    passes parsed reasoning_config to AIAgent (so effort changes take effect
-    on the next session)."""
+    """Confirm streaming resolves session-scoped effort and passes the parsed
+    reasoning_config to AIAgent (so effort changes take effect next turn)."""
 
     def test_streaming_reads_reasoning_effort_from_config(self):
         src = read('api/streaming.py')
-        assert 'parse_reasoning_effort' in src, (
-            "api/streaming.py must import parse_reasoning_effort to translate "
-            "config.yaml agent.reasoning_effort into AIAgent reasoning_config"
+        assert 'resolve_session_reasoning_effort' in src, (
+            "api/streaming.py must resolve the session override (or profile "
+            "fallback) before constructing AIAgent reasoning_config"
         )
-        assert 'coerce_reasoning_effort_for_model' in src, (
-            "api/streaming.py must clamp/drop unsupported model-specific effort "
-            "levels before sending reasoning_config to the provider"
+        resolve_idx = src.index('_effort = resolve_session_reasoning_effort(')
+        parse_idx = src.index('_reasoning_config = parse_reasoning_effort(_effort)', resolve_idx)
+        provider_idx = src.index("_agent_kwargs['reasoning_config'] = _reasoning_config", parse_idx)
+        assert resolve_idx < parse_idx < provider_idx, (
+            "session reasoning must be resolved and parsed before provider config"
         )
-        assert "reasoning_config" in src and "'reasoning_config' in _agent_params" in src, (
+        assert "'reasoning_config' in _agent_params" in src, (
             "api/streaming.py must guard the reasoning_config kwarg with "
             "inspect.signature so older hermes-agent builds don't TypeError"
         )
+
+    def test_session_reasoning_helper_clamps_effort_before_provider_config(self):
+        from api.config import parse_reasoning_effort, resolve_session_reasoning_effort
+
+        effort = resolve_session_reasoning_effort(
+            {"agent": {"reasoning_effort": "medium"}},
+            "max",
+            model_id="gpt-5.5",
+            provider_id="openai-codex",
+        )
+
+        assert effort == "xhigh"
+        assert parse_reasoning_effort(effort) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
 
 
 # ── api/routes.py — /api/reasoning endpoints ──────────────────────────────────

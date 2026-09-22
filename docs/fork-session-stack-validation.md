@@ -40,6 +40,12 @@ actually exercised rather than skipped.
   canonical-cwd, and #7351 wakeup process then ran with Agent on `PYTHONPATH`: **123
   passed, 0 skipped**. The final combined process added file-manager and durable
   compressed-resume siblings and reported **317 passed, 1 optional Agent skip**.
+- Reasoning wiring follow-up: every `tests/*reasoning*.py` suite reported **328
+  passed, 1 optional skip**; `tests/test_regressions.py` reported **59 passed, 1
+  optional Agent skip**; and the project authority plus binding suites reported
+  **32 passed**. The streaming coverage now follows
+  `resolve_session_reasoning_effort` and behaviorally proves model-specific
+  `max` → `xhigh` clamping before `AIAgent.reasoning_config` construction.
 
 ## Static checks
 
@@ -49,6 +55,8 @@ actually exercised rather than skipped.
 - `git diff --check` over the integration range: passed.
 - `python3 scripts/ruff_lint.py --diff a56a65024c33f4b7e13ac6a84cd76fe227088ca8`:
   passed with zero findings on added or modified lines.
+- Reasoning follow-up: `python3 -m compileall -q api tests/test_reasoning_show_hide.py`,
+  direct Ruff on `tests/test_reasoning_show_hide.py`, and `git diff --check`: passed.
 - Added-line security scan found no hardcoded secret assignments, shell execution,
   pickle loading, or formatted SQL. The two `eval` matches are test-side execution
   of extracted repository JavaScript, not user-controlled runtime input.
