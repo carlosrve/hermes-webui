@@ -1455,6 +1455,9 @@ async function newSession(flash, options={}){
     } else if(_activeProject&&_activeProject!==NO_PROJECT_FILTER){
       reqBody.project_id=_activeProject;
     }
+    if(options&&Object.prototype.hasOwnProperty.call(options,'reasoning_effort')){
+      reqBody.reasoning_effort=options.reasoning_effort;
+    }
     // Forward a pre-session toolset override only from the empty composer (#4490).
     if(!S.session && Array.isArray(S._pendingSessionToolsets)) reqBody.enabled_toolsets=S._pendingSessionToolsets;
     const modelSelForNew=$('modelSelect');
@@ -1541,27 +1544,10 @@ async function newSession(flash, options={}){
     if(_sessionSourceFilter==='cli') _sessionSourceFilter='webui';
     if(typeof _hydrateTodosFromSession==='function') _hydrateTodosFromSession(S.session);
     S.lastUsage={...(data.session.last_usage||{})};
-    // Project-bound reasoning effort: apply after the session exists so the
-    // effort chip / agent config reflects the project's pinned level. The
-    // binding's own model+provider are used as the effort context (falling
-    // back to the session's model) so the effort is attached to the right
-    // model family rather than the currently-selected one.
-    // Authority: this intentionally mutates the profile-default preference
-    // (agent.reasoning_effort per model family in config.yaml via
-    // /api/reasoning), not a session-local override. Nathan to decide if
-    // project/session-local scoping is desired — current contract matches
-    // the existing global reasoning_effort model.
-    const boundEffort=(options&&options.reasoning_effort)||null;
-    if(boundEffort&&typeof api==='function'){
-      const effModel=boundModel||(data.session&&data.session.model)||null;
-      const effProvider=boundProvider||(data.session&&data.session.model_provider)||null;
-      const effBody={effort:boundEffort};
-      if(effModel) effBody.model=effModel;
-      if(effProvider) effBody.provider=effProvider;
-      try{
-        const st=await api('/api/reasoning',{method:'POST',body:JSON.stringify(effBody)});
-        if(typeof _applyReasoningChip==='function') _applyReasoningChip((st&&st.reasoning_effort)||boundEffort, st||{});
-      }catch(_){ /* effort is a preference; a failed apply must not fail the session */ }
+    // The server validated and persisted this session-local binding atomically
+    // with creation. It never writes the profile's /api/reasoning default.
+    if(data.session&&data.session.reasoning_effort&&typeof _applyReasoningChip==='function'){
+      _applyReasoningChip(data.session.reasoning_effort,{});
     }
     if(!(options&&options.worktree)) _rememberNewChatDraftSession(S.session);
     if(flash)S.session._flash=true;

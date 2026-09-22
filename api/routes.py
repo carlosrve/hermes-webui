@@ -562,6 +562,36 @@ def _project_default_workspace(proj) -> str | None:
     return ws[0] if ws else None
 
 
+def _project_for_new_session(project_id, profile, *, projects=None):
+    """Resolve an explicit project under the session's profile authority."""
+    normalized_id = project_id or None
+    if not normalized_id:
+        return None
+    effective_profile = profile or _get_active_profile_name() or "default"
+    rows = load_projects() if projects is None else projects
+    project = next(
+        (row for row in rows if row.get("project_id") == normalized_id),
+        None,
+    )
+    if project is None or not _profiles_match(project.get("profile"), effective_profile):
+        raise LookupError("Project not found")
+    return project
+
+
+def _normalize_session_reasoning_effort(value) -> str | None:
+    """Normalize a persisted session effort or reject it fail-closed."""
+    if value is None or str(value).strip() == "":
+        return None
+    from api.config import VALID_REASONING_EFFORTS
+
+    normalized = str(value).strip().lower()
+    if normalized not in VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"reasoning_effort must be one of {', '.join(VALID_REASONING_EFFORTS)}"
+        )
+    return normalized
+
+
 def _apply_project_auto_assign(proj) -> int:
     """File every existing session whose workspace is bound to ``proj`` under it.
 
@@ -15881,6 +15911,25 @@ def handle_post(handler, parsed) -> bool:
         )
 
     if parsed.path == "/api/session/new":
+        requested_profile = body.get("profile") or None
+        project_id = body.get("project_id") or None
+        try:
+            target_project = _project_for_new_session(project_id, requested_profile)
+        except LookupError:
+            return bad(handler, "Project not found", 404)
+        # The durable project row is authoritative over the browser cache. A
+        # corrupt/stale binding fails before workspace/worktree/session state is
+        # created; an unbound project may still receive an explicit session-local
+        # override from another trusted caller.
+        raw_reasoning_effort = (
+            target_project.get("reasoning_effort")
+            if target_project and target_project.get("reasoning_effort") not in (None, "")
+            else body.get("reasoning_effort")
+        )
+        try:
+            reasoning_effort = _normalize_session_reasoning_effort(raw_reasoning_effort)
+        except ValueError as e:
+            return bad(handler, str(e), status=400)
         workspace_prev_session_id = body.get("prev_session_id")
         if workspace_prev_session_id and not _session_id_visible_to_request_profile(
             handler, workspace_prev_session_id, emit_error=False
@@ -15888,7 +15937,7 @@ def handle_post(handler, parsed) -> bool:
             workspace_prev_session_id = None
         try:
             workspace = _resolve_new_session_workspace(
-                body, workspace_prev_session_id, profile=body.get("profile") or None
+                body, workspace_prev_session_id, profile=requested_profile
             )
         except (TypeError, ValueError) as e:
             return bad(handler, str(e))
@@ -15912,13 +15961,13 @@ def handle_post(handler, parsed) -> bool:
                 or str(raw_worktree).strip().lower() in {"1", "true", "yes", "on"}
             )
         else:
-            worktree_requested = _worktree_default_from_config(body.get("profile") or None)
+            worktree_requested = _worktree_default_from_config(requested_profile)
         if worktree_requested:
             try:
                 from api.worktrees import create_worktree_for_workspace
                 base_workspace = workspace
                 if not base_workspace:
-                    _new_profile = body.get("profile") or None
+                    _new_profile = requested_profile
                     try:
                         _lw = get_last_workspace(profile=_new_profile)
                     except TypeError:
@@ -16011,16 +16060,16 @@ def handle_post(handler, parsed) -> bool:
         # Project assignment: explicit project_id wins; otherwise, if an
         # auto-assign project claims this workspace, the session is filed
         # under it automatically (multi-workspace auto-classification).
-        project_id = body.get("project_id") or None
         if not project_id and workspace:
             project_id = _auto_assign_project_for_workspace(
-                workspace, profile=body.get("profile") or None
+                workspace, profile=requested_profile
             )
         s = new_session(
             workspace=workspace,
             model=model,
             model_provider=model_provider,
-            profile=body.get("profile") or None,
+            reasoning_effort=reasoning_effort,
+            profile=requested_profile,
             project_id=project_id,
             worktree_info=worktree_info,
             enabled_toolsets=enabled_toolsets,
@@ -16070,6 +16119,7 @@ def handle_post(handler, parsed) -> bool:
                 workspace=session.workspace,
                 model=session.model,
                 model_provider=session.model_provider,
+                reasoning_effort=getattr(session, "reasoning_effort", None),
                 messages=copy.deepcopy(session.messages),
                 tool_calls=copy.deepcopy(session.tool_calls),
                 # Reset ephemeral / per-session-instance flags. Duplicating an
@@ -16973,6 +17023,7 @@ def handle_post(handler, parsed) -> bool:
             workspace=source.workspace,
             model=source.model,
             model_provider=getattr(source, "model_provider", None),
+            reasoning_effort=getattr(source, "reasoning_effort", None),
             profile=getattr(source, "profile", None),
             title=branch_title,
             messages=forked_messages,
@@ -18083,19 +18134,14 @@ def handle_post(handler, parsed) -> bool:
 
         # reasoning_effort: must be a valid effort level or empty (clear).
         if "reasoning_effort" in body:
-            from api.config import VALID_REASONING_EFFORTS
-
             effort = body.get("reasoning_effort")
             if effort is None or str(effort).strip() == "":
                 proj.pop("reasoning_effort", None)
             else:
-                effort = str(effort).strip().lower()
-                if effort not in VALID_REASONING_EFFORTS:
-                    return bad(
-                        handler,
-                        f"reasoning_effort must be one of {', '.join(VALID_REASONING_EFFORTS)}",
-                    )
-                proj["reasoning_effort"] = effort
+                try:
+                    proj["reasoning_effort"] = _normalize_session_reasoning_effort(effort)
+                except ValueError as e:
+                    return bad(handler, str(e))
 
         save_projects(projects)
 
@@ -24669,6 +24715,7 @@ def _handle_session_compression_recovery_start(handler, body):
                 workspace=getattr(source, "workspace", get_last_workspace()),
                 model=getattr(source, "model", None),
                 model_provider=getattr(source, "model_provider", None),
+                reasoning_effort=getattr(source, "reasoning_effort", None),
                 messages=[],
                 tool_calls=[],
                 pinned=False,

@@ -5900,6 +5900,32 @@ def coerce_reasoning_effort_for_model(
     return raw
 
 
+def resolve_session_reasoning_effort(
+    config_data: dict | None,
+    session_effort: str | None,
+    *,
+    model_id: str | None = None,
+    provider_id: str | None = None,
+    base_url: str | None = None,
+) -> str:
+    """Resolve one session's effort without mutating the profile default.
+
+    A persisted session override is authoritative when present. Sessions without
+    an override retain the existing CLI-parity behavior and inherit
+    ``agent.reasoning_effort`` from their owning profile at turn construction.
+    """
+    cfg = config_data if isinstance(config_data, dict) else {}
+    agent_cfg = cfg.get("agent", {})
+    profile_effort = agent_cfg.get("reasoning_effort") if isinstance(agent_cfg, dict) else None
+    raw = session_effort if session_effort is not None else profile_effort
+    return coerce_reasoning_effort_for_model(
+        raw,
+        model_id,
+        provider_id=provider_id,
+        base_url=base_url,
+    )
+
+
 def get_reasoning_status(
     *,
     model_id: str | None = None,
