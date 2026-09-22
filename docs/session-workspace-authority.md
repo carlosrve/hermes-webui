@@ -42,8 +42,11 @@ prompt snapshots remain unchanged intentionally.
 
 ## Provenance ledger
 
-Base: `06673a9d4b18` on `integration/pr-6836-current-2026-09-12`.
-This delta is local; no additional upstream authorship is claimed.
+Current integration base: upstream `master` at
+`30b407439a22cf02701b30cc803dbc186b4275ce`. The behavioral source was local
+commit `2c66360020d7025fedc465007427c2ad8a1ce69a`; its current selective port and
+retirement conditions are recorded in `fork-session-patch-ledger.md`. No
+additional upstream authorship is claimed.
 
 Upstream PR search preceded implementation (open and closed PRs, queries for
 workspace/session/import and canonical/cwd). Relevant actual diffs inspected:
@@ -104,10 +107,10 @@ cwd recovery UX beyond fail-closed behavior, and historical prompt correction
 are not certified by this proof. Full repository suite and cross-platform CI
 must be reported separately from focused test results.
 
-Local final validation: 306 passed, one preexisting Claude WAL-cache invalidation
-failure reproduced unchanged on base (241 passed, same failure). The focused
-canonical suite passes without Agent skips. Chromium proof passes 14 incident
-open/chip/file-root cases per profile at two widths (default and isolated `proof`),
-plus selector/reload and unknown-root checks. No accepted model execution is
-claimed: the installed Agent task-local cwd resolver is exercised with the same
-workspace returned by the real session-open and chat-resolution handlers.
+Current local results and limitations are recorded in
+`fork-session-stack-validation.md`. The canonical suite passes without Agent
+skips when the Agent source is supplied on `PYTHONPATH`, including the task-local
+cwd resolver with the same workspace returned by the real session-open and
+chat-resolution handlers. The prior Chromium proof is historical evidence for
+the source delta; Chromium was unavailable in the current integration environment,
+so no new browser proof is claimed.
