@@ -32,6 +32,13 @@
    binding. Canonical cwd remains authoritative for open/import, file-manager root,
    chat/regeneration, and explicit selector updates without reverting current
    models/routes/panels behavior.
+6. Apply the QA authority/isolation correction `fa601ed2740224ad2aa8fd7dd093b9e44b73ce02`.
+   Explicit project assignment on `POST /api/session/new` now resolves the durable
+   project row and its profile ownership before workspace, worktree, memory, session,
+   or config mutation. Project-bound reasoning is normalized once, persisted as
+   session metadata, and consumed by both local and Gateway turn construction;
+   sessions without an override continue to inherit the profile default. The browser
+   no longer writes `/api/reasoning` while creating a project session.
 
 ## PR #6836 exact mapping
 
@@ -95,6 +102,7 @@ Workflow policy mapping: `01ef04e82d9e76c35c392a64886869a0a31e2da0` →
 | `00864775b5ae66e41de161fe16ab62446726e821` | `1b0a40724085e29b7bd710c9a861847789dc64da` | Upstream must pass canonical external projection, profile isolation, no-write, and native NULL-cwd preservation regressions. |
 | `8db7dad97b4f5e65937110dce932a979c92df363` | `9302653fa93d1b871476da5c6eccca24991944d9` | Upstream must classify compressed lineages from the served tip, including NULL cwd/profile transitions. |
 | `2c66360020d7025fedc465007427c2ad8a1ce69a` | `d838389e9642eef686077d991c7b86ea6a0e525a` | Upstream must make canonical cwd authoritative across open/import, selector, execution, regeneration, file-manager, and resume while preserving remote POSIX/profile semantics. |
+| QA authority/isolation blockers | `fa601ed2740224ad2aa8fd7dd093b9e44b73ce02` | Upstream must reject unknown/cross-profile project IDs before new-session mutation and persist project reasoning per session without changing the profile default. |
 
 When either upstream PR merges, rebuild a fresh integration stack from updated
 upstream and retire only behavior demonstrably present there. Do not squash this

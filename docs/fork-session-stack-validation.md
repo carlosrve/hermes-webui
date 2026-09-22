@@ -34,6 +34,12 @@ actually exercised rather than skipped.
 - One combined process containing the 17 principal binding, limits/performance,
   external projection/lineage, canonical workspace, file-manager, resume, and
   lineage-sibling files: **362 passed**.
+- QA authority/isolation correction: `test_project_session_authority.py`, project
+  binding/profile suites, Gateway backend, and neighboring regressions: **144 passed,
+  1 skipped** (the skip requires an installed Agent). The dedicated remote-POSIX,
+  canonical-cwd, and #7351 wakeup process then ran with Agent on `PYTHONPATH`: **123
+  passed, 0 skipped**. The final combined process added file-manager and durable
+  compressed-resume siblings and reported **317 passed, 1 optional Agent skip**.
 
 ## Static checks
 
@@ -41,6 +47,8 @@ actually exercised rather than skipped.
 - `node --check static/panels.js`: passed.
 - `node --check static/sessions.js`: passed.
 - `git diff --check` over the integration range: passed.
+- `python3 scripts/ruff_lint.py --diff a56a65024c33f4b7e13ac6a84cd76fe227088ca8`:
+  passed with zero findings on added or modified lines.
 - Added-line security scan found no hardcoded secret assignments, shell execution,
   pickle loading, or formatted SQL. The two `eval` matches are test-side execution
   of extracted repository JavaScript, not user-controlled runtime input.
